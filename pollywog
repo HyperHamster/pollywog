@@ -1,0 +1,552 @@
+#!/usr/bin/env bash
+# vim: ts=4:sw=4:sts=4:et
+
+
+#                     888 888
+#                     888 888
+#                     888 888
+#   88888b.   .d88b.  888 888 888  888 888  888  888  .d88b.   .d88b.
+#   888 "88b d88""88b 888 888 888  888 888  888  888 d88""88b d88P"88b
+#   888  888 888  888 888 888 888  888 888  888  888 888  888 888  888
+#   888 d88P Y88..88P 888 888 Y88b 888 Y88b 888 d88P Y88..88P Y88b 888
+#   88888P"   "Y88P"  888 888  "Y88888  "Y8888888P"   "Y88P"   "Y88888
+#   888                            888                             888
+#   888                       Y8b d88P                        Y8b d88P
+#   888                        "Y88P"                          "Y88P"
+#
+#   pollywog - CLI WINE version manager
+#
+#   Pollywog is a Bash script intended to replace the Wine version management
+#   functionality of PlayOnLinux via a command-line interface.
+#
+#   Author: HyperHamster
+#   License: MIT
+
+
+#   MIT License
+#
+#   Copyright (c) 2017 HyperHamster
+#
+#   Permission is hereby granted, free of charge, to any person obtaining a copy
+#   of this software and associated documentation files (the "Software"), to deal
+#   in the Software without restriction, including without limitation the rights
+#   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#   copies of the Software, and to permit persons to whom the Software is
+#   furnished to do so, subject to the following conditions:
+#
+#   The above copyright notice and this permission notice shall be included in all
+#   copies or substantial portions of the Software.
+#
+#   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#   SOFTWARE.
+
+
+help_msg="\
+usage:
+    pollywog <operation>
+operations:
+    -h, --help          print this message
+    -R [option(s)] <program> [argument(s)]
+                        run program under wine versioned environment
+    -W [option(s)] [wine_version(s)]
+                        manage wine versions
+    -P [option(s)] [wine_prefix(s)]
+                        manage wine prefixes"
+
+arch_regex='^(x86_64|i[3-7]86)$'
+arch=$(uname -m)
+if [[ ! $arch =~ $arch_regex ]]; then
+    echo 'pollywog: error - machine architecture not supported by wine (neither 64-bit nor 32-bit)' 1>&2
+    exit 1
+fi
+
+abs_dir_regex='^(/|(/[^/\0]+)+)$'
+[[ $POLLYWOG_DIR =~ $abs_dir_regex ]] && pollywog_dir="$POLLYWOG_DIR" || pollywog_dir="$HOME/.pollywog"
+
+while getopts ':hRWP' opt; do
+    case $opt in
+        h)
+            if [[ ! $op_R && ! $op_W && ! $op_P ]]; then
+                echo "$help_msg"
+                exit
+            fi;;
+        R)
+            op_R=0;;
+        W)
+            op_W=0;;
+        P)
+            op_P=0;;
+        :)
+            echo "pollywog: error - no argument specified for operator '-$OPTARG'" 1>&2
+            exit 1;;
+        #*)
+        #    echo "pollywog: error - invalid operation specified (use -h for help)" 1>&2
+        #    exit 1;;
+    esac
+done
+if [[ $OPTIND -eq 1 ]]; then
+    echo "$help_msg"
+    exit
+    #echo 'pollywog: error - no operation specified (use -h for help)' 1>&2
+    #exit 1
+fi
+
+help_msg_op_R="\
+usage:
+    pollywog -R [option(s)] <program> [argument(s)]
+                        run program under wine versioned environment
+options:
+    -h, --help          print this message
+    -s                  use wine-staging patched wine version
+    -v <wine_version>   specify wine version to use
+    -p <wine_prefix>    specify wine prefix to use
+    -c                  run winecfg
+    -t                  run winetricks"
+
+help_msg_op_W="\
+usages:
+    pollywog -W [option(s)] [wine_version(s)]
+                        install wine versions
+    pollywog -W
+                        list wine versions
+options:
+    -h, --help          print this message
+    -s                  install with wine-staging patches applied
+    -b, --32            perform 32-bit only build instead of wow64 build on 64-bit machines (saves time)
+    -d                  delete wine version(s)"
+
+help_msg_op_P="\
+usages:
+    pollywog -P [option(s)] [wine_prefix(s)]
+                        query wine prefixes
+    pollywog -P
+                        list wine prefixes
+options:
+    -h, --help          print this message
+    -s                  use wine-staging patched wine version
+    -c                  create wine prefix(es)
+    -v <wine_version>   set wine version of wine prefix(es)
+    -u                  unset wine version of wine prefix(es)
+    -r                  rename wine prefix
+    -d                  delete wine prefix(es)"
+
+wine_version_regex='^[0-9]+\.[0-9]+(\.[0-9]+$|-rc[0-9]+$|$)'
+
+wine_version_valid() {
+    [[ "$*" =~ $wine_version_regex ]] && return 0
+    echo 'pollywog: error - invalid wine version format' 1>&2
+    return 1
+}
+
+wineprefix_dir="$pollywog_dir/wineprefix"
+
+list_wine_prefixes() {
+    [[ $(shopt | grep nullglob | cut -f2) == off ]] && { shopt -s nullglob; nullglob_set=0; }
+    [[ ! -d $wineprefix_dir ]] && return
+    local prefixes=($wineprefix_dir/*)
+    for prefix in "${prefixes[@]}"; do
+        [[ "$*" == \-n ]] && { echo "${prefix##*/}"; continue; }
+        version_file="$prefix/.pollywog"
+        if [[ -r $version_file ]]; then
+            version="$(cat "$version_file")"
+        else
+            if [[ ! $system_version ]]; then
+                system_version="$(wine --version)"
+                [[ $system_version == *\(*\)* ]] && system_patch="$(echo "${system_version,,}" | tr -d \(\) | cut -f2 -d\ )"
+                system_version="$(echo "${system_version//wine-/}" | cut -f1 -d\ )"
+            fi
+            version="$system_patch/$system_version"
+        fi
+        prefix="${prefix##*/}"
+        [[ $prefix == *\ * ]] && { [[ "$*" == \-c ]] && prefix="${prefix//\ /\/}" || prefix="'$prefix'"; }
+        echo "$prefix $version"
+    done
+    [[ $nullglob_set ]] && shopt -u nullglob
+}
+
+wine_prefix_exists() {
+    if [[ $1 == \-p ]]; then
+        shift
+        if wine_prefix_exists -n "$*"; then
+            echo -n ":: Wine prefix '$*' does not exist, create it now? [Y/n] "
+            read -rN 1
+            [[ $REPLY != *$'\n'* ]] && echo
+            if [[ ${REPLY,,} != n ]]; then
+                echo ":: Creating Wine prefix '$*'..."
+                mkdir -p "$wineprefix_dir/$*"
+                return 0
+            fi
+        fi
+    elif [[ $1 == \-n ]]; then
+        shift
+        [[ ! -d $wineprefix_dir/"$*" ]] && return 0
+        echo "pollywog: error - wine prefix '$*' already exists" 1>&2
+    else
+        [[ -d $wineprefix_dir/"$*" ]] && return 0
+        echo "pollywog: error - wine prefix '$*' does not exist" 1>&2
+    fi
+    return 1
+}
+
+list_wine_versions() {
+    [[ $(shopt | grep nullglob | cut -f2) == off ]] && { shopt -s nullglob; nullglob_set=0; }
+    local regex='^(source|build_32|build_64|staging)$'
+    if [[ -d "$pollywog_dir/wine" ]]; then
+        local versions=($pollywog_dir/wine/*)
+        for version in "${versions[@]}"; do
+            version="${version##*/}"
+            [[ ! $version =~ $regex ]] && echo "$version" 
+        done
+    fi
+    if [[ -d "$pollywog_dir/wine/staging" ]]; then
+        local versions=($pollywog_dir/wine/staging/*)
+        for version in "${versions[@]}"; do
+            version="${version##*/}"
+            [[ ! $version =~ $regex ]] && echo "staging/$version" 
+        done
+    fi
+    [[ $nullglob_set ]] && shopt -u nullglob
+}
+
+wine_version_installed() {
+    local prompt=
+    if [[ $1 == \-p ]]; then
+        shift
+        local prompt=0
+    fi
+    wine_version_valid "$*" || exit 1
+    local value=1;
+    #if [[ $opt_s ]]; then
+    #    [[ -d $pollywog_dir/wine/staging/"$*" ]] && value=0
+    #else
+    #    [[ -d $pollywog_dir/wine/"$*" ]] && value=0
+    #fi
+    [[ -d $wine_dir/"$*" ]] && value=0
+    if [[ $prompt && $value -eq 1 ]]; then
+        echo -n ":: Wine version '$*' is not installed, install it now? [Y/n] "
+        read -rN 1
+        [[ $REPLY != *$'\n'* ]] && echo
+        if [[ "${REPLY,,}" != n ]]; then
+            install_wine_versions "$*"
+            value=0
+        fi
+    fi
+    return $value
+}
+
+generate_version_file() {
+    wine_version_installed -p "$*" || exit 1
+    local contents="$*"
+    [[ $opt_s ]] && contents="staging/$contents"
+    version_file="$contents"
+}
+
+install_wine_versions() {
+    local inital_dir="$PWD"
+    set_wine_dir
+    
+    for wine_version in "$@"; do
+        wine_version_valid "$wine_version" || continue
+        if wine_version_installed "$wine_version"; then
+            echo -n ":: Wine version '$*' is already installed, reinstall it? [y/N] "
+            read -rN 1
+            [[ $REPLY != *$'\n'* ]] && echo
+            [[ ${REPLY,,} != y ]] && continue
+            rm -rf "$wine_dir/$wine_version" "$wine_dir/build_32/$wine_version" "$wine_dir/build_64/$wine_version"
+        fi
+        if [[ $opt_s ]]; then
+            source_dir="$wine_dir/source/wine-patched-staging-$wine_version"
+        else
+            source_dir="$wine_dir/source/wine-$wine_version"
+        fi
+        if [[ -d $source_dir ]]; then
+            echo -n ":: Wine version '$*' is already downloaded, redownload it? [y/N] "
+            read -rN 1
+            [[ $REPLY != *$'\n'* ]] && echo
+            [[ ${REPLY,,} != y ]] && local skip_dl=0 || rm -rf "$source_dir"
+        fi
+        
+        
+        if [[ ! $skip_dl ]]; then
+            echo ":: Downloading Wine version '$wine_version'..."
+            if [[ $opt_s ]]; then
+                source_url="https://github.com/wine-compholio/wine-patched/archive/staging-$wine_version"
+            else
+                parent_url=$(echo "$wine_version" | cut -d. -f-2)
+                [[ $(echo $parent_url | cut -d. -f1) -eq 2 && $(echo $parent_url | cut -d. -f2) -ne 0 ]] && parent_url='2.x'
+                source_url="https://dl.winehq.org/wine/source/$parent_url/wine-$wine_version"
+            fi
+            source_base_dir="$wine_dir/source"
+            test_url() {
+                local response_code="$(curl -sLI "$1" | grep '^HTTP/1\.[0-1]' | cut -d\  -f2 | tail -1)"
+                echo "$response_code"
+            }
+            tar_types=(.tar.bz2 .tar.xz .tar.gz)
+            for tar_type in "${tar_types[@]}"; do
+                if [[ $(test_url "$source_url$tar_type") -eq 200 ]]; then
+                    mkdir -p "$source_base_dir"
+                    case $tar_type in
+                        ${tar_types[0]})
+                            tar_opts='-xjC';;
+                        ${tar_types[1]})
+                            tar_opts='-xJC';;
+                        ${tar_types[2]})
+                            tar_opts='-xzC';;
+                    esac
+                    curl -sL "$source_url$tar_type" | tar "$tar_opts" "$source_base_dir" &>/dev/null && break
+                fi
+                if [[ $tar_type == ${tar_types[-1]} ]]; then
+                    echo 'pollywog: error - wine version specified is unavailable' 1>&2
+                    exit 1
+                fi
+            done
+        fi
+        
+        echo ":: Building Wine version '$wine_version'..."
+        install_dir="$wine_dir/$wine_version"
+        if [[ $arch == x86_64 && ! $opt_b ]]; then
+            build_64_dir="$wine_dir/build_64/$wine_version"
+            mkdir -p "$build_64_dir"
+            cd "$build_64_dir"
+            "$source_dir/configure" --prefix="$install_dir" --exec-prefix="$install_dir" --enable-win64
+            if ! make; then
+                echo 'pollywog: error - wine 64-bit build failed' 1>&2
+                exit 1
+            fi
+        fi
+        build_32_dir="$wine_dir/build_32/$wine_version"
+        mkdir -p "$build_32_dir"
+        cd "$build_32_dir"
+        if [[ $arch == x86_64 ]]; then
+            if [[ $opt_b ]]; then
+                PKG_CONFIG_PATH='/usr/lib32' "$source_dir/configure" \
+                    --prefix="$install_dir" --exec-prefix="$install_dir"
+            else
+                PKG_CONFIG_PATH='/usr/lib32' "$source_dir/configure" \
+                    --prefix="$install_dir" --exec-prefix="$install_dir" --with-wine64="$build_dir"
+            fi
+        else
+            "$source_dir/configure" --prefix="$install_dir" --exec-prefix="$install_dir"
+        fi
+        if ! make; then
+            echo 'pollywog: error - wine 32-bit build failed' 1>&2
+            exit 1
+        fi
+        
+        
+        echo ":: Installing Wine version '$wine_version'"
+        mkdir -p "$install_dir"
+        if [[ $arch == x86_64 && ! $opt_b ]]; then
+            cd "$build_64_dir"
+            make install
+            cd "$build_32_dir"
+        fi
+        make install
+    done
+    
+    cd "$inital_dir"
+}
+
+set_wine_dir() {
+    wine_dir="$pollywog_dir/wine"
+    [[ $opt_s ]] && wine_dir="$wine_dir/staging"
+}
+
+if [[ $op_R ]]; then
+    OPTIND=1
+    while getopts ':hsctv:p:' opt; do
+        case $opt in
+            h)
+                echo "$help_msg_op_R"
+                exit;;
+            s)
+                opt_s=0;;
+            c)
+                opt_c=0;;
+            t)
+                opt_t=0;;
+            v)
+                opt_v=0
+                wine_version=$OPTARG;;
+            p)
+                if [[ ! $WINEPREFIX ]]; then
+                    opt_p=0
+                    wine_prefix=$OPTARG
+                fi;;
+            :)
+                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
+                exit 1;;
+        esac
+    done
+    shift $((OPTIND-1))
+    
+    set_wine_dir
+    
+    if [[ $opt_p ]]; then
+        wine_prefix_exists "$wine_prefix" 2>/dev/null || wine_prefix_exists -p "$wine_prefix" || exit 1
+        export WINEPREFIX="$wineprefix_dir/$wine_prefix"
+        if [[ $opt_v ]]; then
+            generate_version_file "$wine_version"
+            echo ":: Setting Wine version to '$wine_version' for Wine prefix '$wine_prefix'..."
+            echo -n "$version_file" > "$wineprefix_dir/$wine_prefix/.pollywog"
+        fi
+        [[ -r $wineprefix_dir/$wine_prefix/.pollywog ]] && wine_version="$(cat "$wineprefix_dir/$wine_prefix/.pollywog")"
+    elif [[ $opt_v ]]; then
+        wine_version_installed -p "$wine_version" || exit 1
+        [[ $opt_s ]] && wine_version="staging/$wine_version"
+    fi
+    
+    if [[ $wine_version ]]; then
+        if [[ $wine_prefix ]]; then
+            echo ":: Running Wine version '$wine_version' in Wine prefix '$wine_prefix'..."
+        else
+            echo ":: Running Wine version '$wine_version'..."
+        fi
+        wine_version_dir="$pollywog_dir/wine/$wine_version"
+        export WINEVERPATH="$wine_version_dir"
+        export PATH="$wine_version_dir/bin:$PATH"
+        export WINESERVER="$wine_version_dir/bin/wineserver"
+        export WINELOADER="$wine_version_dir/bin/wine"
+        export WINEDLLPATH="$wine_version_dir/lib/wine/fakedlls"
+        export LD_LIBRARY_PATH="$wine_version_dir/lib:$LD_LIBRARY_PATH" 
+    elif [[ $wine_prefix ]]; then
+        echo ":: Running in Wine prefix '$wine_prefix'..."
+    fi
+    
+    if [[ $opt_c ]]; then
+        winecfg "$@"
+    elif [[ $opt_t ]]; then
+        winetricks "$@"
+    else
+        wine "$@"
+    fi
+elif [[ $op_W ]]; then
+    OPTIND=1
+    while getopts ':hsbd3' opt; do
+        case $opt in
+            h)
+                echo "$help_msg_op_W"
+                exit;;
+            s)
+                opt_s=0;;
+            b|3)
+                opt_b=0;;
+            d)
+                opt_d=0;;
+            :)
+                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
+                exit 1;;
+        esac
+    done
+    shift $((OPTIND-1))
+    
+    set_wine_dir
+    
+    if [[ "$*" ]]; then
+        if [[ $opt_d ]]; then
+            for version in "$@"; do
+                wine_version_installed "$version" || continue
+                echo ":: Deleting Wine version '$version'..."
+                rm -r "$wine_dir/$version"
+                prefixes=($wineprefix_dir/*)
+                for prefix in "${prefixes[@]}"; do
+                    version_file="$prefix/.pollywog"
+                    [[ ! -r $version_file ]] && continue
+                    [[ $opt_s ]] && patch='staging/'
+                    [[ $(cat "$version_file") == $patch$version ]] && rm "$version_file"
+                done
+            done
+        else
+            install_wine_versions "$@"
+        fi
+    else
+        list_wine_versions
+    fi
+elif [[ $op_P ]]; then
+    OPTIND=1
+    while getopts ':hdcrsuv:' opt; do
+        case $opt in
+            h)
+                echo "$help_msg_op_P"
+                exit;;
+            d)
+                opt_d=0;;
+            c)
+                opt_c=0;;
+            r)
+                opt_r=0;;
+            s)
+                opt_s=0;;
+            u)
+                opt_u=0;;
+            v)
+                opt_v=0
+                wine_version=$OPTARG;;
+            :)
+                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
+                exit 1;;
+        esac
+    done
+    shift $((OPTIND-1))
+    
+    set_wine_dir
+    
+    if [[ "$*" ]]; then
+        if [[ $opt_d ]]; then
+            for prefix in "$@"; do
+                wine_prefix_exists "$prefix" || continue
+                echo ":: Deleting Wine prefix '$prefix'..."
+                rm -r "$wineprefix_dir/$prefix"
+            done
+        elif [[ $opt_r ]]; then
+            if [[ $3 ]]; then
+                echo "pollywog: error - too many arguments" 1>&2
+                exit 1
+            fi
+            if [[ $1 == $2 ]]; then
+                echo "pollywog: error - arguments cannot be the same" 1>&2
+                exit 1
+            fi
+            wine_prefix_exists "$1" || exit 1
+            wine_prefix_exists -n "$2" || exit 1
+            echo ":: Renaming Wine prefix '$1' to '$2'..."
+            mv "$wineprefix_dir/$1" "$wineprefix_dir/$2"
+        elif [[ $opt_c ]]; then
+            for prefix in "$@"; do
+                wine_prefix_exists -n "$prefix" || continue
+                echo ":: Creating Wine prefix '$prefix'..."
+                mkdir -p "$wineprefix_dir/$prefix"
+            done
+        elif [[ $opt_u ]]; then
+            for prefix in "$@"; do
+                wine_prefix_exists "$prefix" || continue
+                version_file="$wineprefix_dir/$prefix/.pollywog"
+                if [[ -e $version_file ]]; then
+                    echo ":: Unsetting Wine version of Wine prefix '$prefix'..."
+                    rm "$version_file"
+                else
+                    echo "pollywog: error - wine prefix '$prefix' has no wine version set"
+                fi
+            done
+        elif [[ $opt_v ]]; then
+            generate_version_file "$wine_version"
+            for prefix in "$@"; do
+                wine_prefix_exists "$prefix" 2>/dev/null || wine_prefix_exists -p "$prefix" || continue
+                echo ":: Setting Wine version to '$wine_version' for Wine prefix '$prefix'..."
+                echo -n "$version_file" > "$wineprefix_dir/$prefix/.pollywog"
+            done
+        else
+            for prefix in "$@"; do
+                prefix_info="$(list_wine_prefixes | grep -E "(^$prefix |^'$prefix' )")"
+                [[ $prefix_info ]] && echo $prefix_info
+            done
+        fi
+    else
+        list_wine_prefixes
+    fi
+fi
