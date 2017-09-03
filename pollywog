@@ -68,32 +68,36 @@ fi
 abs_dir_regex='^(/|(/[^/\0]+)+)$'
 [[ $POLLYWOG_DIR =~ $abs_dir_regex ]] && pollywog_dir="$POLLYWOG_DIR" || pollywog_dir="$HOME/.pollywog"
 
+op="$(echo "$1" | tr -d \- | cut -b1)"
+setopt() {
+    if [[ $1 == \-t ]]; then
+        shift
+        local t=0
+    fi
+    [[ $t ]] && local word='operation' || local word='option'
+    if [[ $1 == \? ]]; then
+        [[ $t ]] && OPTARG="$op"
+        echo "pollywog: error - invalid $word '-$OPTARG' (use -h for help)" 1>&2
+        exit 1
+    elif [[ $1 == \: ]]; then
+        echo "pollywog: error - no argument specified for $word '-$OPTARG'" 1>&2
+        exit 1
+    else
+        [[ $t ]] && local base='op_' || local base='opt_'
+        declare -g "$base$1"=0
+    fi
+}
+
+opts=()
 while getopts ':hRWP' opt; do
-    case $opt in
-        h)
-            if [[ ! $op_R && ! $op_W && ! $op_P ]]; then
-                echo "$help_msg"
-                exit
-            fi;;
-        R)
-            op_R=0;;
-        W)
-            op_W=0;;
-        P)
-            op_P=0;;
-        :)
-            echo "pollywog: error - no argument specified for operator '-$OPTARG'" 1>&2
-            exit 1;;
-        #*)
-        #    echo "pollywog: error - invalid operation specified (use -h for help)" 1>&2
-        #    exit 1;;
-    esac
+    opts+=("$opt")
 done
-if [[ $OPTIND -eq 1 ]]; then
+OPTIND=1
+if [[ ${#opts[@]} -ge 1 && ${opts[0]} != h ]]; then
+    setopt -t "${opts[0]}"
+else
     echo "$help_msg"
     exit
-    #echo 'pollywog: error - no operation specified (use -h for help)' 1>&2
-    #exit 1
 fi
 
 help_msg_op_R="\
@@ -221,11 +225,6 @@ wine_version_installed() {
     fi
     wine_version_valid "$*" || exit 1
     local value=1;
-    #if [[ $opt_s ]]; then
-    #    [[ -d $pollywog_dir/wine/staging/"$*" ]] && value=0
-    #else
-    #    [[ -d $pollywog_dir/wine/"$*" ]] && value=0
-    #fi
     [[ -d $wine_dir/"$*" ]] && value=0
     if [[ $prompt && $value -eq 1 ]]; then
         echo -n ":: Wine version '$*' is not installed, install it now? [Y/n] "
@@ -240,10 +239,11 @@ wine_version_installed() {
 }
 
 generate_version_file() {
-    wine_version_installed -p "$*" || exit 1
-    local contents="$*"
+    wine_version_installed -p "$1" || exit 1
+    local contents="$1"
     [[ $opt_s ]] && contents="staging/$contents"
-    version_file="$contents"
+    #version_file="$contents"
+    declare -g "$2"="$contents"
 }
 
 install_wine_versions() {
@@ -358,40 +358,25 @@ set_wine_dir() {
 }
 
 if [[ $op_R ]]; then
-    OPTIND=1
-    while getopts ':hsctv:p:' opt; do
-        case $opt in
-            h)
-                echo "$help_msg_op_R"
-                exit;;
-            s)
-                opt_s=0;;
-            c)
-                opt_c=0;;
-            t)
-                opt_t=0;;
-            v)
-                opt_v=0
-                wine_version=$OPTARG;;
-            p)
-                if [[ ! $WINEPREFIX ]]; then
-                    opt_p=0
-                    wine_prefix=$OPTARG
-                fi;;
-            :)
-                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
-                exit 1;;
-        esac
+    while getopts ':Rhsctv:p:' opt; do
+        [[ $opt == R ]] && continue
+        if [[ $opt == h ]]; then
+            echo "$help_msg_op_R"
+            exit
+        fi
+        [[ $opt == v ]] && wine_version="$OPTARG"
+        [[ $opt == p ]] && wine_prefix="$OPTARG"
+        setopt "$opt"
     done
     shift $((OPTIND-1))
     
     set_wine_dir
     
-    if [[ $opt_p ]]; then
+    if [[ $opt_p && ! $WINEPREFIX ]]; then
         wine_prefix_exists "$wine_prefix" 2>/dev/null || wine_prefix_exists -p "$wine_prefix" || exit 1
         export WINEPREFIX="$wineprefix_dir/$wine_prefix"
         if [[ $opt_v ]]; then
-            generate_version_file "$wine_version"
+            generate_version_file "$wine_version" version_file
             echo ":: Setting Wine version to '$wine_version' for Wine prefix '$wine_prefix'..."
             echo -n "$version_file" > "$wineprefix_dir/$wine_prefix/.pollywog"
         fi
@@ -426,22 +411,13 @@ if [[ $op_R ]]; then
         wine "$@"
     fi
 elif [[ $op_W ]]; then
-    OPTIND=1
-    while getopts ':hsbd3' opt; do
-        case $opt in
-            h)
-                echo "$help_msg_op_W"
-                exit;;
-            s)
-                opt_s=0;;
-            b|3)
-                opt_b=0;;
-            d)
-                opt_d=0;;
-            :)
-                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
-                exit 1;;
-        esac
+    while getopts ':Whsbd3' opt; do
+        [[ $opt == W ]] && continue
+        if [[ $opt == h ]]; then
+            echo "$help_msg_op_W"
+            exit
+        fi
+        setopt "$opt"
     done
     shift $((OPTIND-1))
     
@@ -468,29 +444,29 @@ elif [[ $op_W ]]; then
         list_wine_versions
     fi
 elif [[ $op_P ]]; then
-    OPTIND=1
-    while getopts ':hdcrsuv:' opt; do
-        case $opt in
-            h)
-                echo "$help_msg_op_P"
-                exit;;
-            d)
-                opt_d=0;;
-            c)
-                opt_c=0;;
-            r)
-                opt_r=0;;
-            s)
-                opt_s=0;;
-            u)
-                opt_u=0;;
-            v)
-                opt_v=0
-                wine_version=$OPTARG;;
-            :)
-                echo "pollywog: error - no argument specified for option '-$OPTARG'" 1>&2
-                exit 1;;
-        esac
+#    opts=()
+#    while getopts ':hdcrsuv:' opt; do
+#        if [[ $opt =~ [hH] ]]; then
+#            echo "$help_msg_op_P"
+#            exit
+#        fi
+#        opts+=("$opt")
+#        [[ $opt == v ]] && wine_version="$OPTARG"
+#    done
+#    shift $((OPTIND-1))
+#    OPTIND=1
+#    for opt in "${opts[@]:1}"; do
+#        setopt "$opt"
+#    done
+#    echo "'$op'"
+    while getopts ':Phdcrsuv:' opt; do
+        [[ $opt == P ]] && continue
+        if [[ $opt == h ]]; then
+            echo "$help_msg_op_P"
+            exit
+        fi
+        [[ $opt == v ]] && wine_version="$OPTARG"
+        setopt "$opt"
     done
     shift $((OPTIND-1))
     
@@ -534,7 +510,7 @@ elif [[ $op_P ]]; then
                 fi
             done
         elif [[ $opt_v ]]; then
-            generate_version_file "$wine_version"
+            generate_version_file "$wine_version" version_file
             for prefix in "$@"; do
                 wine_prefix_exists "$prefix" 2>/dev/null || wine_prefix_exists -p "$prefix" || continue
                 echo ":: Setting Wine version to '$wine_version' for Wine prefix '$prefix'..."
