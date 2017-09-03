@@ -68,22 +68,22 @@ fi
 abs_dir_regex='^(/|(/[^/\0]+)+)$'
 [[ $POLLYWOG_DIR =~ $abs_dir_regex ]] && pollywog_dir="$POLLYWOG_DIR" || pollywog_dir="$HOME/.pollywog"
 
-op="$(echo "$1" | tr -d \- | cut -b1)"
+oparg="$(echo "$1" | tr -d \- | cut -b1)"
 setopt() {
     if [[ $1 == \-t ]]; then
         shift
-        local t=0
+        local op=0
     fi
-    [[ $t ]] && local word='operation' || local word='option'
+    [[ $op ]] && local word='operation' || local word='option'
     if [[ $1 == \? ]]; then
-        [[ $t ]] && OPTARG="$op"
+        [[ $op ]] && OPTARG="$oparg"
         echo "pollywog: error - invalid $word '-$OPTARG' (use -h for help)" 1>&2
         exit 1
     elif [[ $1 == \: ]]; then
         echo "pollywog: error - no argument specified for $word '-$OPTARG'" 1>&2
         exit 1
     else
-        [[ $t ]] && local base='op_' || local base='opt_'
+        [[ $op ]] && local base='op_' || local base='opt_'
         declare -g "$base$1"=0
     fi
 }
@@ -444,21 +444,6 @@ elif [[ $op_W ]]; then
         list_wine_versions
     fi
 elif [[ $op_P ]]; then
-#    opts=()
-#    while getopts ':hdcrsuv:' opt; do
-#        if [[ $opt =~ [hH] ]]; then
-#            echo "$help_msg_op_P"
-#            exit
-#        fi
-#        opts+=("$opt")
-#        [[ $opt == v ]] && wine_version="$OPTARG"
-#    done
-#    shift $((OPTIND-1))
-#    OPTIND=1
-#    for opt in "${opts[@]:1}"; do
-#        setopt "$opt"
-#    done
-#    echo "'$op'"
     while getopts ':Phdcrsuv:' opt; do
         [[ $opt == P ]] && continue
         if [[ $opt == h ]]; then
