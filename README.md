@@ -12,4 +12,4 @@
 888                        "Y88P"                          "Y88P"
 ```
 
-Pollywog is a Bash script intended to replace the Wine version management functionality of PlayOnLinux via a command-line interface.
+### Pollywog is a Bash script intended to replace the Wine version management functionality of PlayOnLinux via a command-line interface.
