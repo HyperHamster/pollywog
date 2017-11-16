@@ -14,4 +14,4 @@
 
 Pollywog is a Bash script intended to replace the Wine version management functionality of PlayOnLinux via a command-line interface.
 
-#### WIP
+*README WIP*
