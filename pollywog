@@ -46,6 +46,12 @@
 #   SOFTWARE.
 
 
+# TODO: add prefix program shortcut creation/management
+# TODO: add/implement wine architecture to/from prefix metadata file
+# IDEA: add gallium-nine support
+# IDEA: add generic wine patch select system
+
+
 help_msg="\
 usage:
     pollywog <operation>
@@ -56,7 +62,9 @@ operations:
     -W [option(s)] [wine_version(s)]
                         manage wine versions
     -P [option(s)] [wine_prefix(s)]
-                        manage wine prefixes"
+                        manage wine prefixes
+    -S [option(s)] <wine_prefix> <shortcut>
+                        run shortcut from wine prefix"
 
 arch_regex='^(x86_64|i[3-7]86)$'
 arch=$(uname -m)
@@ -84,12 +92,12 @@ setopt() {
         exit 1
     else
         [[ $op ]] && local base='op_' || local base='opt_'
-        declare -g "$base$1"=0
+        declare -g "$base$1=0"
     fi
 }
 
 opts=()
-while getopts ':hRWP' opt; do
+while getopts ':hRWPS' opt; do
     opts+=("$opt")
 done
 OPTIND=1
@@ -136,8 +144,18 @@ options:
     -c                  create wine prefix(es)
     -v <wine_version>   set wine version of wine prefix(es)
     -u                  unset wine version of wine prefix(es)
-    -r                  rename wine prefix
-    -d                  delete wine prefix(es)"
+    -n                  rename wine prefix
+    -r                  remove wine prefix(es)"
+
+help_msg_op_S="\
+usage:
+    pollywog -S [option(s)] <wine_prefix> <shortcut>
+                        run shortcut from wine prefix
+options:
+    -h, --help          print this message
+    -c <program>        create shortcut for program in wine prefix
+    -n                  rename shortcut in wine prefix
+    -r                  remove shortcut from wine prefix"
 
 wine_version_regex='^[0-9]+\.[0-9]+(\.[0-9]+$|-rc[0-9]+$|$)'
 
@@ -161,10 +179,10 @@ list_wine_prefixes() {
         else
             if [[ ! $system_version ]]; then
                 system_version="$(wine --version)"
-                [[ $system_version == *\(*\)* ]] && system_patch="$(echo "${system_version,,}" | tr -d \(\) | cut -f2 -d\ )"
+                [[ $system_version == *\(*\)* ]] && system_patch="$(echo "${system_version,,}" | tr -d \(\) | cut -f2 -d\ )/"
                 system_version="$(echo "${system_version//wine-/}" | cut -f1 -d\ )"
             fi
-            version="$system_patch/$system_version"
+            version="$system_patch$system_version"
         fi
         prefix="${prefix##*/}"
         [[ $prefix == *\ * ]] && { [[ "$*" == \-c ]] && prefix="${prefix//\ /\/}" || prefix="'$prefix'"; }
@@ -238,12 +256,38 @@ wine_version_installed() {
     return $value
 }
 
+name_regex='[A-Za-z_][A-Za-z0-9_]*'
+variable_regex="^$name_regex=.*$"
+shortcut_regex="^\[$name_regex\]$"
+
+parse_version_file() {
+    [[ $2 ]] && declare -gA "$2"
+    [[ $3 ]] && declare -gA "$3"
+    while read -r; do
+        if [[ ! $shortcut ]]; then
+            if [[ $REPLY =~ $variable_regex ]]; then
+                [[ ! $3 ]] && declare -g "$REPLY" || declare -g "$3[${REPLY/=/]=}"
+            elif [[ $2 && $REPLY =~ $shortcut_regex ]]; then
+                local shortcut="$(echo "$REPLY" | tr -d [])"
+            fi
+        else
+            declare -g "$2[$shortcut]=$REPLY"
+            unset shortcut
+        fi
+    done < "$1"
+}
+
+update_version_file() {
+    local variables=(wine_version wine_patch wine_arch)
+    
+}
+
 generate_version_file() {
     wine_version_installed -p "$1" || exit 1
     local contents="$1"
     [[ $opt_s ]] && contents="staging/$contents"
     #version_file="$contents"
-    declare -g "$2"="$contents"
+    declare -g $2="$contents"
 }
 
 install_wine_versions() {
@@ -376,7 +420,8 @@ if [[ $op_R ]]; then
         wine_prefix_exists "$wine_prefix" 2>/dev/null || wine_prefix_exists -p "$wine_prefix" || exit 1
         export WINEPREFIX="$wineprefix_dir/$wine_prefix"
         if [[ $opt_v ]]; then
-            generate_version_file "$wine_version" version_file
+            wine_version_installed -p "$wine_version" || exit 1
+            #generate_version_file "$wine_version" version_file
             echo ":: Setting Wine version to '$wine_version' for Wine prefix '$wine_prefix'..."
             echo -n "$version_file" > "$wineprefix_dir/$wine_prefix/.pollywog"
         fi
@@ -444,7 +489,7 @@ elif [[ $op_W ]]; then
         list_wine_versions
     fi
 elif [[ $op_P ]]; then
-    while getopts ':Phdcrsuv:' opt; do
+    while getopts ':Phncrsuv:' opt; do
         [[ $opt == P ]] && continue
         if [[ $opt == h ]]; then
             echo "$help_msg_op_P"
@@ -458,13 +503,13 @@ elif [[ $op_P ]]; then
     set_wine_dir
     
     if [[ "$*" ]]; then
-        if [[ $opt_d ]]; then
+        if [[ $opt_r ]]; then
             for prefix in "$@"; do
                 wine_prefix_exists "$prefix" || continue
-                echo ":: Deleting Wine prefix '$prefix'..."
+                echo ":: Removing Wine prefix '$prefix'..."
                 rm -r "$wineprefix_dir/$prefix"
             done
-        elif [[ $opt_r ]]; then
+        elif [[ $opt_n ]]; then
             if [[ $3 ]]; then
                 echo "pollywog: error - too many arguments" 1>&2
                 exit 1
@@ -510,4 +555,16 @@ elif [[ $op_P ]]; then
     else
         list_wine_prefixes
     fi
+elif [[ $op_S ]]; then
+    while getopts ':Shc:nr' opt; do
+        [[ $opt == S ]] && continue
+        if [[ $opt == h ]]; then
+            echo "$help_msg_op_S"
+            exit
+        fi
+        setopt "$opt"
+    done
+    shift $((OPTIND-1))
+    
+    
 fi
