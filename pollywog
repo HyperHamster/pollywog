@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2153,SC2154,SC2188
 # vim: ts=4:sw=4:sts=4:et
 
 
@@ -66,30 +67,42 @@ operations:
     -S [option(s)] <wine_prefix> <shortcut>
                         run shortcut from wine prefix"
 
+error() {
+    local type
+    if [[ $1 == '-t' ]]; then
+        type="$2"
+        shift 2
+    fi
+    
+    local message
+    [[ $ERROR_MSG ]] && message="$ERROR_MSG" || message="$*"
+    
+    echo "pollywog: ${type:-error}: $message" 1>&2
+    [[ $type ]] || exit 1
+}
+warn() {
+    error -t warn "$*"
+}
+
 arch_regex='^(x86_64|i[3-7]86)$'
 arch=$(uname -m)
-if [[ ! $arch =~ $arch_regex ]]; then
-    echo 'pollywog: error - machine architecture not supported by wine (neither 64-bit nor 32-bit)' 1>&2
-    exit 1
-fi
+[[ $arch =~ $arch_regex ]] || error 'machine architecture not supported by wine (neither 64-bit nor 32-bit)'
 
 abs_dir_regex='^(/|(/[^/\0]+)+)$'
 [[ $POLLYWOG_DIR =~ $abs_dir_regex ]] && pollywog_dir="$POLLYWOG_DIR" || pollywog_dir="$HOME/.pollywog"
 
 oparg="$(echo "$1" | tr -d \- | cut -b1)"
 setopt() {
-    if [[ $1 == \-t ]]; then
+    if [[ $1 == '-t' ]]; then
         shift
         local op=0
     fi
     [[ $op ]] && local word='operation' || local word='option'
-    if [[ $1 == \? ]]; then
+    if [[ $1 == '?' ]]; then
         [[ $op ]] && OPTARG="$oparg"
-        echo "pollywog: error - invalid $word '-$OPTARG' (use -h for help)" 1>&2
-        exit 1
-    elif [[ $1 == \: ]]; then
-        echo "pollywog: error - no argument specified for $word '-$OPTARG'" 1>&2
-        exit 1
+        error "invalid $word '-$OPTARG' (use -h for help)"
+    elif [[ $1 == ':' ]]; then
+        error "no argument specified for $word '-$OPTARG'"
     else
         [[ $op ]] && local base='op_' || local base='opt_'
         declare -g "$base$1=0"
@@ -145,7 +158,8 @@ options:
     -v <wine_version>   set wine version of wine prefix(es)
     -u                  unset wine version of wine prefix(es)
     -n                  rename wine prefix
-    -r                  remove wine prefix(es)"
+    -r                  remove wine prefix(es)
+    -d                  change directory to wine prefix"
 
 help_msg_op_S="\
 usage:
@@ -165,7 +179,7 @@ wine_version_regex='^[0-9]+\.[0-9]+(\.[0-9]+$|-rc[0-9]+$|$)'
 
 wine_version_valid() {
     [[ "$*" =~ $wine_version_regex ]] && return 0
-    echo 'pollywog: error - invalid wine version format' 1>&2
+    warn 'invalid wine version format'
     return 1
 }
 
@@ -174,13 +188,15 @@ wineprefix_dir="$pollywog_dir/wineprefix"
 list_wine_prefixes() {
     [[ $(shopt | grep nullglob | cut -f2) == off ]] && { shopt -s nullglob; nullglob_set=0; }
     [[ ! -d $wineprefix_dir ]] && return
-    local prefixes=($wineprefix_dir/*)
+    local prefixes=("$wineprefix_dir"/*)
+    local version
+    local dotfile
     for prefix in "${prefixes[@]}"; do
-        [[ "$*" == \-n ]] && { echo "${prefix##*/}"; continue; }
+        #[[ "$*" == \-n ]] && { echo "${prefix##*/}"; continue; }
         dotfile="$prefix/.pollywog"
         parse_dotfile -A "$dotfile"
         if [[ ${dotfile_variables[wine_version]} ]]; then
-            version="${dotfile_variables[wine_patch]}${dotfile_variables[wine_patch]:+/}${dotfile_variables[wine_version]}"
+            version="${dotfile_variables[wine_version]}"
         else
             if [[ ! $system_version ]]; then
                 system_version="$(wine --version)"
@@ -189,8 +205,9 @@ list_wine_prefixes() {
             fi
             version="$system_patch$system_version"
         fi
+        version="${dotfile_variables[wine_patch]}${dotfile_variables[wine_patch]:+/}$version${dotfile_variables[wine_arch]:+/}${dotfile_variables[wine_arch]}"
         prefix="${prefix##*/}"
-        [[ $prefix == *\ * ]] && { [[ "$*" == \-c ]] && prefix="${prefix//\ /\/}" || prefix="'$prefix'"; }
+        #[[ $prefix == *\ * ]] && { [[ "$*" == \-c ]] && prefix="${prefix//\ /\/}" || prefix="'$prefix'"; }
         echo "$prefix $version"
     done
     [[ $nullglob_set ]] && shopt -u nullglob
@@ -212,10 +229,10 @@ wine_prefix_exists() {
     elif [[ $1 == \-n ]]; then
         shift
         [[ ! -d $wineprefix_dir/"$*" ]] && return 0
-        echo "pollywog: error - wine prefix '$*' already exists" 1>&2
+        warn "wine prefix '$*' already exists"
     else
         [[ -d $wineprefix_dir/"$*" ]] && return 0
-        echo "pollywog: error - wine prefix '$*' does not exist" 1>&2
+        warn "wine prefix '$*' does not exist"
     fi
     return 1
 }
@@ -224,14 +241,14 @@ list_wine_versions() {
     [[ $(shopt | grep nullglob | cut -f2) == off ]] && { shopt -s nullglob; nullglob_set=0; }
     local regex='^(source|build_32|build_64|staging)$'
     if [[ -d "$pollywog_dir/wine" ]]; then
-        local versions=($pollywog_dir/wine/*)
+        local versions=("$pollywog_dir"/wine/*)
         for version in "${versions[@]}"; do
             version="${version##*/}"
             [[ ! $version =~ $regex ]] && echo "$version" 
         done
     fi
     if [[ -d "$pollywog_dir/wine/staging" ]]; then
-        local versions=($pollywog_dir/wine/staging/*)
+        local versions=("$pollywog_dir"/wine/staging/*)
         for version in "${versions[@]}"; do
             version="${version##*/}"
             [[ ! $version =~ $regex ]] && echo "staging/$version" 
@@ -308,7 +325,7 @@ update_dotfile() {
     local ignored_variables=()
     local ignored_shortcuts=()
     for ignore; do
-        if [[ $ignore =~ ^$name_regex$ ]]; then
+        if [[ $ignore =~ \^$name_regex\$ ]]; then
             ignored_variables+=("$ignore")
         elif [[ $ignore =~ $shortcut_regex ]]; then
             ignored_shortcuts+=("${ignore//[\[\]]}")
@@ -320,30 +337,33 @@ update_dotfile() {
     
     #local variables
     #[[ $* ]] && variables=("$@") ||
-    [[ ! -v variables ]] && local variables=(wine_version wine_patch wine_arch)
+    [[ -v variables ]] || local variables=('wine_version' 'wine_patch' 'wine_arch')
     for variable in "${variables[@]}"; do
         for ignored in "${ignored_variables[@]}"; do
-            [[ $variable == $ignored ]] && continue 2
+            [[ $variable == "$ignored" ]] && continue 2
         done
         [[ -v $variable ]] && echo "$variable=${!variable}" >> "$dotfile_path"
     done
     for variable in "${!dotfile_variables[@]}"; do
         for ignored in "${ignored_variables[@]}"; do
-            [[ $variable == $ignored ]] && continue 2
+            [[ $variable == "$ignored" ]] && continue 2
         done
         for written in "${variables[@]}"; do
-            [[ -v $written && $variable == $written ]] && continue 2
+            [[ -v $written && $variable == "$written" ]] && continue 2
         done
         echo "$variable=${dotfile_variables[$variable]}" >> "$dotfile_path"
     done
     
     for shortcut in "${!shortcuts[@]}"; do
+        # /!\ without this bash complains of arithmetic error; what in the literal fuck /!\
+        echo -n ''
+        # /!\
         if [[ ${dotfile_shortcuts[$shortcut]} ]]; then
-            echo "pollywog: error - shortcut '$shortcut' already exists" 1>&2
+            warn "shortcut '$shortcut' already exists"
             continue
         fi
         if [[ ! $shortcut =~ ^$name_regex$ ]]; then
-            echo "pollywog: error - shortcut name can only contain letters, numbers, and underscores; and can only begin with a letter or an underscore" 1>&2
+            warn 'shortcut name may only contain letters, numbers, underscores, and may only begin with a letter or an underscore'
             continue
         fi
         echo "[$shortcut]" >> "$dotfile_path"
@@ -351,7 +371,7 @@ update_dotfile() {
     done
     for shortcut in "${!dotfile_shortcuts[@]}"; do
         for ignored in "${ignored_shortcuts[@]}"; do
-            [[ $shortcut == $ignored ]] && continue 2
+            [[ $shortcut == "$ignored" ]] && continue 2
         done
         echo "[$shortcut]" >> "$dotfile_path"
         echo "${dotfile_shortcuts[$shortcut]}" >> "$dotfile_path"
@@ -367,8 +387,9 @@ update_dotfile() {
 #}
 
 install_wine_versions() {
-    local inital_dir="$PWD"
     set_wine_dir
+    local source_base_dir="$wine_dir/source"
+    mkdir -p "$source_base_dir"
     
     for wine_version in "$@"; do
         wine_version_valid "$wine_version" || continue
@@ -377,12 +398,12 @@ install_wine_versions() {
             read -rN 1
             [[ $REPLY != *$'\n'* ]] && echo
             [[ ${REPLY,,} != y ]] && continue
-            rm -rf "$wine_dir/$wine_version" "$wine_dir/build_32/$wine_version" "$wine_dir/build_64/$wine_version"
+            rm -rf "${wine_dir:?unset/empty}/$wine_version" "$wine_dir/build_32/$wine_version" "$wine_dir/build_64/$wine_version"
         fi
         if [[ $opt_s ]]; then
-            source_dir="$wine_dir/source/wine-patched-staging-$wine_version"
+            source_dir="$source_base_dir/wine-patched-staging-$wine_version"
         else
-            source_dir="$wine_dir/source/wine-$wine_version"
+            source_dir="$source_base_dir/wine-$wine_version"
         fi
         if [[ -d $source_dir ]]; then
             echo -n ":: Wine version '$*' is already downloaded, redownload it? [y/N] "
@@ -401,9 +422,9 @@ install_wine_versions() {
                 [[ $(echo $parent_url | cut -d. -f1) -eq 2 && $(echo $parent_url | cut -d. -f2) -ne 0 ]] && parent_url='2.x'
                 source_url="https://dl.winehq.org/wine/source/$parent_url/wine-$wine_version"
             fi
-            source_base_dir="$wine_dir/source"
             test_url() {
-                local response_code="$(curl -sLI "$1" | grep '^HTTP/1\.[0-1]' | cut -d\  -f2 | tail -1)"
+                local response_code
+                response_code="$(curl -sLI "$1" | grep '^HTTP/1\.[0-1]' | cut -d\  -f2 | tail -1)"
                 echo "$response_code"
             }
             tar_types=(.tar.bz2 .tar.xz .tar.gz)
@@ -412,69 +433,68 @@ install_wine_versions() {
                     mkdir -p "$source_base_dir"
                     case $tar_type in
                         ${tar_types[0]})
-                            tar_opts='-xjC';;
+                            tar_opt='j';;
                         ${tar_types[1]})
-                            tar_opts='-xJC';;
+                            tar_opt='J';;
                         ${tar_types[2]})
-                            tar_opts='-xzC';;
+                            tar_opt='z';;
                     esac
-                    curl -sL "$source_url$tar_type" | tar "$tar_opts" "$source_base_dir" &>/dev/null && break
+                    #curl -sL "$source_url$tar_type" | tar "$tar_opts" "$source_base_dir" &>/dev/null && break
+                    
+                    source_tarball="$source_base_dir/${wine_patch:-wine}-$wine_version$tar_type"
+                    [[ -e $source_tarball ]] && rm -f "$source_tarball"
+                    wget -q --show-progress "$source_url$tar_type" -P "$source_base_dir" -T 0
+                    mkdir -p "$source_dir"
+                    tar "-x${tar_opt}f" "$source_tarball" -C "$source_base_dir"
+                    break
                 fi
-                if [[ $tar_type == ${tar_types[-1]} ]]; then
-                    echo 'pollywog: error - wine version specified is unavailable' 1>&2
-                    exit 1
-                fi
+                [[ $tar_type == "${tar_types[-1]}" ]] && error 'wine version specified is unavailable'
             done
         fi
         
         echo ":: Building Wine version '$wine_version'..."
         install_dir="$wine_dir/$wine_version"
         if [[ $arch == x86_64 && ! $opt_b ]]; then
+            ERROR_MSG='wine 64-bit build failed'
             build_64_dir="$wine_dir/build_64/$wine_version"
             mkdir -p "$build_64_dir"
-            cd "$build_64_dir"
+            cd "$build_64_dir" || error
             "$source_dir/configure" --prefix="$install_dir" --exec-prefix="$install_dir" --enable-win64
-            if ! make; then
-                echo 'pollywog: error - wine 64-bit build failed' 1>&2
-                exit 1
-            fi
+            make || error
         fi
+        ERROR_MSG='wine 32-bit build failed'
         build_32_dir="$wine_dir/build_32/$wine_version"
         mkdir -p "$build_32_dir"
-        cd "$build_32_dir"
+        cd "$build_32_dir" || error
         if [[ $arch == x86_64 ]]; then
             if [[ $opt_b ]]; then
                 PKG_CONFIG_PATH='/usr/lib32' "$source_dir/configure" \
                     --prefix="$install_dir" --exec-prefix="$install_dir"
             else
                 PKG_CONFIG_PATH='/usr/lib32' "$source_dir/configure" \
-                    --prefix="$install_dir" --exec-prefix="$install_dir" --with-wine64="$build_dir"
+                    --prefix="$install_dir" --exec-prefix="$install_dir" --with-wine64="$build_64_dir"
             fi
         else
             "$source_dir/configure" --prefix="$install_dir" --exec-prefix="$install_dir"
         fi
-        if ! make; then
-            echo 'pollywog: error - wine 32-bit build failed' 1>&2
-            exit 1
-        fi
-        
+        make || error
         
         echo ":: Installing Wine version '$wine_version'"
+        ERROR_MSG='wine install failed'
         mkdir -p "$install_dir"
         if [[ $arch == x86_64 && ! $opt_b ]]; then
-            cd "$build_64_dir"
-            make install
-            cd "$build_32_dir"
+            cd "$build_64_dir" || error
+            make install || error
+            cd "$build_32_dir" || error
         fi
-        make install
+        make install || error
+        
+        unset ERROR_MSG
     done
-    
-    cd "$inital_dir"
 }
 
 set_wine_dir() {
-    wine_dir="$pollywog_dir/wine"
-    [[ $opt_s ]] && wine_dir="$wine_dir/staging"
+    wine_dir="$pollywog_dir/wine${wine_patch:+/}$wine_patch"
 }
 
 setup_wine_environment() {
@@ -487,13 +507,19 @@ setup_wine_environment() {
         else
             echo ":: Running Wine version '$wine_version'..."
         fi
-        wine_version_dir="$pollywog_dir/wine/$wine_version"
+        wine_version_dir="$wine_dir/$wine_version"
         export WINEVERPATH="$wine_version_dir"
         export PATH="$wine_version_dir/bin:$PATH"
         export WINESERVER="$wine_version_dir/bin/wineserver"
+        #if [[ $WINEARCH ]]; then
         export WINELOADER="$wine_version_dir/bin/wine"
         export WINEDLLPATH="$wine_version_dir/lib/wine/fakedlls"
         export LD_LIBRARY_PATH="$wine_version_dir/lib:$LD_LIBRARY_PATH"
+        #else
+        #    export WINELOADER="$wine_version_dir/bin/wine64"
+        #    export WINEDLLPATH="$wine_version_dir/lib64/wine/fakedlls"
+        #    export LD_LIBRARY_PATH="$wine_version_dir/lib64:$LD_LIBRARY_PATH"
+        #fi
     elif [[ $wine_prefix ]]; then
         echo ":: Running in Wine prefix '$wine_prefix'..."
     fi
@@ -502,28 +528,50 @@ setup_wine_environment() {
 start_shortcut() {
     local shortcut="$1"
     parse_dotfile "$dotfile"
-    if [[ ! ${shortcuts[$shortcut]}  ]]; then
-        echo "pollywog: error - shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'" 1>&2
-        exit 1
-    fi
+    [[ ${shortcuts[$shortcut]} ]] || error "shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'"
+    set_wine_dir
     setup_wine_environment
-    echo ":: Starting shortcut '$shortcut'..."
+    if [[ $shortcut == _ ]]; then
+        echo ":: Starting default shortcut..."
+    else
+        echo ":: Starting shortcut '$shortcut'..."
+    fi
     wine start "${shortcuts[$shortcut]}"
 }
 
 list_shortcuts() {
     [[ $(shopt | grep ^nullglob | cut -f2) == off ]] && { shopt -s nullglob; nullglob_set=0; }
     [[ ! -d $wineprefix_dir ]] && return
-    local prefixes=($wineprefix_dir/*)
+    local prefixes=("$wineprefix_dir"/*)
     local dotfile
     for prefix in "${prefixes[@]}"; do
         dotfile="$prefix/.pollywog"
         parse_dotfile "$dotfile"
+        
         if [[ ${#shortcuts[@]} -ge 1 ]]; then
-            echo "${prefix##*/}"
+            local prefix_name="${prefix##*/}"
+            echo -n "$prefix_name─"
+            
+            local _shortcuts=()
             for shortcut in "${!shortcuts[@]}"; do
-                echo "  $shortcut"
-                echo "    ${shortcuts[$shortcut]}"
+                [[ $shortcut != _ ]] && _shortcuts+=("$shortcut")
+            done
+            
+            if [[ ${shortcuts[_]} ]]; then
+                if [[ ${#_shortcuts[@]} -ge 1 ]]; then
+                    echo -n '┬'
+                else
+                    echo -n '─'
+                fi
+                echo "─${shortcuts[_]}"
+            else
+                echo '┐'
+            fi
+            for _shortcut in "${_shortcuts[@]}"; do
+                #local shortcuts_len="$((${#shortcuts[@]} - 1))"
+                for ((i=0; i<=${#prefix_name}; i++)); do echo -n ' '; done
+                [[ $_shortcut != "${_shortcuts[$((${#_shortcuts[@]} - 1))]}" ]] && echo -n '├' || echo -n '└'
+                echo "─$_shortcut───${shortcuts[$_shortcut]}"
             done
         fi
     done
@@ -547,7 +595,7 @@ if [[ $op_R ]]; then
     
     set_wine_dir
     
-    if [[ ! $WINEPREFIX && $opt_p ]]; then
+    if [[ ! $WINEPREFIX && $wine_prefix ]]; then
         wine_prefix_exists "$wine_prefix" 2>/dev/null || wine_prefix_exists -p "$wine_prefix" || exit 1
 #        export WINEPREFIX="$wineprefix_dir/$wine_prefix"
         if [[ $opt_v ]]; then
@@ -555,6 +603,8 @@ if [[ $op_R ]]; then
             #generate_version_file "$wine_version" version_file
             echo ":: Setting Wine version to '$wine_version' for Wine prefix '$wine_prefix'..."
             #echo -n "$version_file" > "$wineprefix_dir/$wine_prefix/.pollywog"
+            update_dotfile "$wineprefix_dir/$wine_prefix/.pollywog"
+        elif [[ $opt_b ]]; then
             update_dotfile "$wineprefix_dir/$wine_prefix/.pollywog"
         fi
         #[[ -r $wineprefix_dir/$wine_prefix/.pollywog ]] && wine_version="$(cat "$wineprefix_dir/$wine_prefix/.pollywog")"
@@ -564,7 +614,7 @@ if [[ $op_R ]]; then
         wine_version_installed -p "$wine_version" || exit 1
 #        [[ $opt_s ]] && wine_version="staging/$wine_version"
     fi
-        
+    
 #    if [[ $wine_version ]]; then
 #        if [[ $wine_prefix ]]; then
 #            echo ":: Running Wine version '$wine_version' in Wine prefix '$wine_prefix'..."
@@ -610,8 +660,8 @@ elif [[ $op_W ]]; then
             for version in "$@"; do
                 wine_version_installed "$version" || continue
                 echo ":: Removing Wine version '$version'..."
-                rm -r "$wine_dir/$version"
-                prefixes=($wineprefix_dir/*)
+                rm -r "${wine_dir:?unset/empty}/$version"
+                prefixes=("$wineprefix_dir"/*)
                 for prefix in "${prefixes[@]}"; do
                     dotfile="$prefix/.pollywog"
                     #[[ ! -r $version_file ]] && continue
@@ -629,7 +679,7 @@ elif [[ $op_W ]]; then
         list_wine_versions
     fi
 elif [[ $op_P ]]; then
-    while getopts ':Phncrsubv:' opt; do
+    while getopts ':Phncrsubdv:' opt; do
         [[ $opt == P ]] && continue
         if [[ $opt == h ]]; then
             echo "$help_msg_op_P"
@@ -649,17 +699,11 @@ elif [[ $op_P ]]; then
             for prefix in "$@"; do
                 wine_prefix_exists "$prefix" || continue
                 echo ":: Removing Wine prefix '$prefix'..."
-                rm -r "$wineprefix_dir/$prefix"
+                rm -r "${wineprefix_dir:?unset/empty}/$prefix"
             done
         elif [[ $opt_n ]]; then
-            if [[ $3 ]]; then
-                echo "pollywog: error - too many arguments" 1>&2
-                exit 1
-            fi
-            if [[ $1 == $2 ]]; then
-                echo "pollywog: error - arguments cannot be the same" 1>&2
-                exit 1
-            fi
+            [[ $# -gt 2 ]] && error 'too many arguments'
+            [[ $1 == "$2" ]] && error 'arguments cannot be the same'
             wine_prefix_exists "$1" || exit 1
             wine_prefix_exists -n "$2" || exit 1
             echo ":: Renaming Wine prefix '$1' to '$2'..."
@@ -680,7 +724,7 @@ elif [[ $op_P ]]; then
                     #rm "$version_file"
                     update_dotfile "$dotfile" 'wine_version' 'wine_patch'
                 else
-                    echo "pollywog: error - wine prefix '$prefix' has no wine version set"
+                    echo "pollywog: wine prefix '$prefix' has no wine version set"
                 fi
             done
         elif [[ $opt_v ]]; then
@@ -692,6 +736,18 @@ elif [[ $op_P ]]; then
                 #echo -n "$version_file" > "$wineprefix_dir/$prefix/.pollywog"
                 update_dotfile "$wineprefix_dir/$prefix/.pollywog"
             done
+        elif [[ $opt_d ]]; then
+            [[ $# -gt 1 ]] && error 'too many arguments'
+            wine_prefix="$1"
+            wine_prefix_exists "$wine_prefix" || exit 1
+            cd_dir="$wineprefix_dir/$wine_prefix"
+            [[ -d $cd_dir/drive_c ]] && cd_dir="$cd_dir/drive_c"
+            cd "$cd_dir" || error 'cd failed'
+            exec env wine_prefix="$wine_prefix" bash
+        elif [[ $opt_b ]]; then
+            wine_prefix_exists "$1" || exit 1
+            echo ":: Setting Wine arch to '$wine_arch' for Wine prefix '$1'..."
+            update_dotfile "$wineprefix_dir/$1/.pollywog"
         else
             for prefix in "$@"; do
                 prefix_info="$(list_wine_prefixes | grep -E "(^$prefix |^'$prefix' )")"
@@ -719,38 +775,20 @@ elif [[ $op_S ]]; then
         dotfile="$wineprefix_dir/$wine_prefix/.pollywog"
         parse_dotfile -A "$dotfile"
         if [[ $opt_r ]]; then
-            if [[ $# -eq 0 ]]; then
-                echo "pollywog: error - too few arguments" 1>&2
-                exit 1
-            fi
+            [[ $# -eq 0 ]] && error 'too few arguments'
             for shortcut; do
-                if [[ ! ${dotfile_shortcuts[$shortcut]} ]]; then
-                    echo "pollywog: error - shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'" 1>&2
-                    exit 1
-                fi
+                [[ ${dotfile_shortcuts[$shortcut]} ]] || error "shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'"
                 echo ":: Removing shortcut '$shortcut' from Wine prefix '$wine_prefix'..."
                 remove_shortcuts+=("[$shortcut]")
             done
             update_dotfile "$dotfile" "${remove_shortcuts[@]}"
         elif [[ $opt_n ]]; then
-            if [[ $# -gt 2 ]]; then
-                echo "pollywog: error - too many arguments" 1>&2
-                exit 1
-            fi
-            if [[ $1 == $2 ]]; then
-                echo "pollywog: error - arguments cannot be the same" 1>&2
-                exit 1
-            fi
+            [[ $# -gt 2 ]] && error 'too many arguments'
+            [[ $1 == "$2" ]] && error 'arguments cannot be the same'
             shortcut="$1"
-            if [[ ! ${dotfile_shortcuts[$shortcut]}  ]]; then
-                echo "pollywog: error - shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'" 1>&2
-                exit 1
-            fi
+            [[ ${dotfile_shortcuts[$shortcut]} ]] || error "shortcut '$shortcut' does not exist in wine prefix '$wine_prefix'"
             new_name="$2"
-            if [[ ${dotfile_shortcuts[$new_name]} ]]; then
-                echo "pollywog: error - shortcut '$shortcut' already exists in wine prefix '$wine_prefix'" 1>&2
-                exit 1
-            fi
+            [[ ${dotfile_shortcuts[$new_name]} ]] && error "shortcut '$shortcut' already exists in wine prefix '$wine_prefix'"
             declare -A shortcuts["$new_name"]="${dotfile_shortcuts[$shortcut]}"
             echo ":: Renaming shortcut '$shortcut' to '$new_name' in Wine prefix '$wine_prefix'..."
             update_dotfile "$dotfile" "[$shortcut]"
@@ -762,10 +800,7 @@ elif [[ $op_S ]]; then
                 start_shortcut "$shortcut"
             else
                 shift
-                if [[ ${dotfile_shortcuts[$shortcut]} ]]; then
-                    echo "pollywog: error - shortcut '$shortcut' already exists in wine prefix '$wine_prefix'" 1>&2
-                    exit 1
-                fi
+                [[ ${dotfile_shortcuts[$shortcut]} ]] && error "shortcut '$shortcut' already exists in wine prefix '$wine_prefix'"
                 declare -A shortcuts["$shortcut"]="$*"
                 echo ":: Creating shortcut '$shortcut' in Wine prefix '$wine_prefix'..."
                 update_dotfile "$dotfile"
